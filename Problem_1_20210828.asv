@@ -1,0 +1,110 @@
+%% Important notes
+% Thay đổi initial guess cho stability test so với phiene bản 20210827
+% Thay đổi yi và Yi trong file Check stability one phase
+
+% Có cập nhật thêm ngày 29/8/2021
+
+format long;
+clc;
+clear;
+%% Input data
+%Constant:
+R = 10.7315; %psia*ft3/((lbm.mol)*R)
+
+% Random example 
+% p = 100; %psia
+% T = 500; %oR
+
+p = 1450.38; %psia
+T = 635.67; %oR
+
+% Thứ tự của CO2 luôn ở vị trí thứ 3
+
+%The order of zi is from H2O, N2, CO2, C1, C2, C3, iC4, nC4, iC5, nC5, C6,
+%C7, C8, C9, C10, C16
+zi = [0.1; 0.00545; 0.02827; 0.45536; 0.08606; 0.0576; 0.01012; 0.02441; 0.00896; 0.01244; 0.01581; 0.02551; 0.02746; 0.01698; 0.01254; 0.11303];
+
+%Input data of critical properties for components from PVTsim database
+%The order is from H2O, N2, CO2, C1, C2, C3, iC4, nC4, iC5, nC5, C6,
+%C7, C8, C9, C10, C16
+Pc =[3203.73; 492.32; 1069.87; 667.2; 708.35; 615.76; 529.06; 551.10; 490.85; 489.38; 430.59; 427.16; 397.63; 363.54; 337.87; 248.91]; %psia
+Tc =[1165.140; 227.16; 547.56; 343.08; 549.72; 665.64; 734.58; 765.36; 828.72; 845.28; 913.32; 968.679; 1004.477; 1047.74; 1084.527; 1289.501]; %oR
+omega =[0.344; 0.04; 0.225; 0.008; 0.098; 0.152; 0.176; 0.193; 0.227; 0.251; 0.296; 0.3374; 0.3743; 0.4205; 0.4628; 0.7124];
+critical_volume = [0.90; 1.44; 1.51; 1.59; 2.37; 3.25; 4.21; 4.08; 4.90; 4.87; 5.93; 7.62; 7.81; 8.48; 9.19; 14.76];
+MW = [18.015; 28.014; 44.010; 16.043; 30.070; 44.097; 58.124; 58.124; 72.151; 72.151; 86.178; 96.000; 107.000; 121.000; 134.000; 222.000];
+
+% Binary interaction parameters is read from excel file with the order of
+% components is H2O, N2, CO2, C1, C2, C3, iC4, nC4, iC5, nC5, C6,
+% C7, C8, C9, C10, C16
+% This binary interaction parameters is from Winprop manual
+kij = xlsread('Kij.xlsx');
+
+tol = 1e-8; % Fixed tolerance
+maxiter = 50; % Fixed maxiter
+
+%% First stability test
+fprintf("Stability test for one phases system. \n\n");
+[twophases, Ki_first_stability_result, Yi_first_stability_result] = stability_test_on_single_phase_20210828(zi, p, T, Pc, Tc, omega, kij);
+
+%% Two phase split calculations and second stability test
+if twophases == true
+    fprintf("\nSystem will split into two phases and need to perform two phase flash calculation.\n");
+    % For two phase.
+    Ki_2 = Ki_first_stability_result;
+    [Kiv_2, yiv_2, yil_2, Fv_2, Zv_2, Zl_2] = vapor_liquid_2Peq(Ki_2, p, T, Pc, Tc, zi, omega, kij, tol, maxiter);
+else
+    fprintf("\nSystem is stable at single phase. \n");
+    % For one phase.
+    [phi_overall, zfactor] = fugacitycoef_multicomp(zi, p, T, Pc, Tc, omega, kij);
+end
+
+%% Calculate phase molecular weight of each phase from two phase flash
+MW_vapor_2pflash = sum(yiv_2.*MW);
+MW_liquid_2pflash = sum(yil_2.*MW);
+
+%% Second stability test
+fprintf("\nStability test for two phases system. \n");
+if MW_vapor_2pflash > MW_liquid_2pflash
+    fprintf("\nTwo phase stability test is conducted on vapor phase composition. \n\n");
+    [threephases_test_on_vapor, Ki_vapor_result, Yi_vapor_result] = stability_test_on_two_phase_20210828(yiv_2, Ki_first_stability_result, Kiv_2, p, T, Pc, Tc, omega, kij);
+    
+    if threephases_test_on_vapor == false 
+        fprintf("\nThe two phases system is stable. \n");
+    else
+        fprintf("\nThe two phases system is not stable. \n");
+    end
+else
+    fprintf("\nTwo phase stability test is conducted on liquid phase composition. \n\n");
+    [threephases_test_on_liquid, Ki_liquid_result, Yi_liquid_result] = stability_test_on_two_phase_20210828(yil_2, Ki_first_stability_result, Kiv_2, p, T, Pc, Tc, omega, kij);
+    
+    if threephases_test_on_liquid == false 
+        fprintf("\nThe two phases system is stable. \n");
+    else
+        fprintf("\nThe two phases system is not stable. \n");
+    end
+end
+
+%% Three phase spit calculation
+Ki_3 = zeros(size(zi,1),2);
+if MW_vapor_2pflash > MW_liquid_2pflash
+
+    if threephases_test_on_vapor == true 
+        fprintf("\nSystem will split into three phases and need to perform three phase flash calculation\n");
+        
+        Ki_3(:,1) = 1./Kiv_2; % Two phase flash calculation
+        Ki_3(:,2) = Ki_vapor_result; % Two phase stability test
+        [Ki_3, yiv_3, yiL2_3, yiL1_3, F_3] = vapor_liquid1_liquid2_3Peq(Ki_3, p, T, Pc, Tc, zi, omega, kij, tol, maxiter); 
+    else
+        Ki_3(:,1) = 1./Kiv_2; % Two phase flash calculation
+        Ki_3(:,2) = Ki_liquid_result; % Two phase stability test
+        [Ki_3, yiv_3, yiL2_3, yiL1_3, F_3] = vapor_liquid1_liquid2_3Peq(Ki_3, p, T, Pc, Tc, zi, omega, kij, tol, maxiter);
+    end
+    
+    if max(F_3) > 1
+        fprintf("\nThe solution of three phase flash calculation is negative flash. Final conclusion is that the system has only two phases.\n");   
+    else
+        fprintf("\nFinal conclusion is that the system has three phases.\n");
+    end
+else
+    fprintf("\n Final conclusion is that the system has only two phases.\n");
+end
